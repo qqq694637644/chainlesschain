@@ -234,6 +234,17 @@ def reader_thread(stream, q: "queue.Queue[str]", log_file) -> None:
         q.put(f"[reader-error] {exc}")
 
 
+def persist_keys(keys: List[str], raw_key_txt: pathlib.Path, raw_keys_json: pathlib.Path) -> List[str]:
+    unique: List[str] = []
+    for k in keys:
+        if k not in unique:
+            unique.append(k)
+    raw_keys_json.write_text(json.dumps(unique, indent=2), encoding="utf-8")
+    if unique:
+        raw_key_txt.write_text(unique[0], encoding="ascii")
+    return unique
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Capture WeChat raw AES DB keys using device-side frida-inject")
     parser.add_argument("--out", default=r"C:\wechat-stage", help="local output/cache directory")
@@ -293,6 +304,7 @@ def main() -> int:
     print(f"Log: {log_path}")
 
     keys: List[str] = []
+    interrupted = False
     proc = subprocess.Popen(
         adb_cmd,
         text=True,
@@ -336,9 +348,14 @@ def main() -> int:
                             k = normalize_key(obj.get(field))
                             if k and k not in keys:
                                 keys.append(k)
+                                persist_keys(keys, raw_key_txt, raw_keys_json)
                                 print(f"CAPTURED key#{len(keys)} {k}")
+                                print(f"Saved key(s) immediately -> {raw_keys_json}")
                     elif kind in {"hooked", "waiting", "agent-started", "error"}:
                         pass
+        except KeyboardInterrupt:
+            interrupted = True
+            print("\nInterrupted by user; preserving captured key(s) before exit...")
         finally:
             if proc.poll() is None:
                 proc.terminate()
@@ -352,17 +369,12 @@ def main() -> int:
     if not args.keep_device_files:
         run_adb(args.adb, args.device, "shell", "su", "-c", f"rm -f {remote_inject} {remote_agent}", check=False)
 
-    # Persist unique keys.
-    unique = []
-    for k in keys:
-        if k not in unique:
-            unique.append(k)
-    raw_keys_json.write_text(json.dumps(unique, indent=2), encoding="utf-8")
-    if unique:
-        raw_key_txt.write_text(unique[0], encoding="ascii")
+    unique = persist_keys(keys, raw_key_txt, raw_keys_json)
 
     print(f"\nSaved {len(unique)} unique raw key(s) -> {raw_keys_json}")
     if unique:
+        if interrupted:
+            print("Capture was interrupted after at least one key was saved.")
         print(f"First key -> {raw_key_txt}")
         print("\nNext command:")
         print(
