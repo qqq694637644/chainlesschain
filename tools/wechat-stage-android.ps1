@@ -41,6 +41,25 @@ function Invoke-Adb {
   & $Adb @full
 }
 
+function Invoke-AdbOptional {
+  param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+  $full = @()
+  if ($Device) { $full += @("-s", $Device) }
+  $full += $Args
+
+  # Missing optional diagnostic files should not terminate the whole staging
+  # script. Windows PowerShell can surface native stderr as NativeCommandError
+  # when ErrorActionPreference is Stop, so temporarily relax it here.
+  $oldEap = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    & $Adb @full 2>$null | Out-Null
+    return $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldEap
+  }
+}
+
 function Assert-LastExitCode {
   param([string]$What)
   if ($LASTEXITCODE -ne 0) {
@@ -127,6 +146,11 @@ exit 0
 '@
 
 $script = $script.Replace("__REMOTE_DIR__", $remoteDir).Replace("__DB_PATH__", ($dbPathLiteral -replace '"', '\"'))
+# Android /system/bin/sh expects LF line endings. If this temporary script is
+# written with Windows CRLF, sh sees stray \r characters and fails with errors
+# such as "inaccessible or not found" or "syntax error: unexpected '|'".
+$script = $script -replace "`r`n", "`n"
+$script = $script -replace "`r", "`n"
 $tmpScript = Join-Path $env:TEMP "cc-wechat-stage-$stamp.sh"
 [System.IO.File]::WriteAllText($tmpScript, $script, [System.Text.UTF8Encoding]::new($false))
 
@@ -145,7 +169,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[5/6] Pulling staged files to $localOut ..."
 foreach ($name in @("enmm.enc.db", "uins.txt", "imeis.txt", "info.txt", "error.txt", "cp-db.err")) {
   $target = Join-Path $localOut $name
-  Invoke-Adb pull "$remoteDir/$name" $target 2>$null | Out-Null
+  $null = Invoke-AdbOptional pull "$remoteDir/$name" $target
 }
 
 if (Test-Path (Join-Path $localOut "error.txt")) {
