@@ -101,6 +101,42 @@ The script installs Python package `frida` for the current user if missing, dete
 
 ### 4.2 Capture WeChat raw key
 
+The preferred route for WeChat 8.x is device-side `frida-inject`, because some
+phones fail host-side Frida attach with `unable to access process with pid ...`.
+This follows the original ChainlessChain `scripts/android/pdh-frida-wechat-aeskey.mjs`
+logic: hook `aes_v8_set_encrypt_key` in `libWCDB.so` and collect every unique
+256-bit key seen during the capture window.
+
+First, open WeChat normally and enter any chat. Then run:
+
+```powershell
+python tools\wechat_frida_inject_capture_key.py --out C:\wechat-stage --seconds 120
+```
+
+During the 120 seconds, browse several chats or use search so WeChat opens more
+WCDB databases. The script writes:
+
+```text
+C:\wechat-stage\raw-key.txt
+C:\wechat-stage\raw-keys.json
+C:\wechat-stage\frida-inject-wechat-aes.log
+```
+
+Then decrypt:
+
+```powershell
+node tools\wechat-decrypt-standalone.js `
+  --db C:\wechat-stage\enmm.enc.db `
+  --out C:\wechat-stage\decoded.db `
+  --raw-keys C:\wechat-stage\raw-keys.json `
+  --force
+```
+
+### 4.3 Host-side Frida attach fallback
+
+This route is retained as a fallback only. It may fail on some phones with
+`unable to access process with pid ...`.
+
 ```powershell
 python tools\wechat_frida_capture_key.py
 ```
@@ -119,7 +155,7 @@ On some phones WeChat cannot be started by Frida spawn and fails with an error s
 python tools\wechat_frida_capture_key.py --attach-only
 ```
 
-### 4.3 Decrypt with captured raw key
+### 4.4 Decrypt with captured raw key
 
 ```powershell
 node tools\wechat-decrypt-standalone.js `
