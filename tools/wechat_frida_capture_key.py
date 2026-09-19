@@ -20,9 +20,11 @@ import json
 import pathlib
 import queue
 import re
+import shutil
+import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 try:
     import frida  # type: ignore
@@ -57,6 +59,62 @@ def find_process(device: Any, package: str) -> Optional[int]:
     return None
 
 
+def adb_args(adb: str, device: str, args: Iterable[str]) -> List[str]:
+    out = [adb]
+    if device:
+        out += ["-s", device]
+    out += list(args)
+    return out
+
+
+def run_adb(adb: str, device: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    cmd = adb_args(adb, device, args)
+    proc = subprocess.run(
+        cmd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"adb failed ({proc.returncode}): {' '.join(cmd)}\n{(proc.stdout or '').strip()}")
+    return proc
+
+
+def launch_with_adb(adb: str, device_serial: str, package: str) -> None:
+    if adb == "adb" and not shutil.which("adb"):
+        raise RuntimeError("adb not found in PATH; pass --adb C:\\path\\to\\adb.exe or add platform-tools to PATH")
+
+    # Avoid attaching too late to an already-open database. Starting from a
+    # clean app process gives the hook a better chance to catch sqlite3_key.
+    run_adb(adb, device_serial, "shell", "am", "force-stop", package, check=False)
+    proc = run_adb(
+        adb,
+        device_serial,
+        "shell",
+        "monkey",
+        "-p",
+        package,
+        "-c",
+        "android.intent.category.LAUNCHER",
+        "1",
+        check=True,
+    )
+    if proc.stdout:
+        print(proc.stdout.strip())
+
+
+def wait_for_process(device: Any, package: str, timeout: int = 20) -> int:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pid = find_process(device, package)
+        if pid:
+            return pid
+        time.sleep(0.5)
+    raise RuntimeError(f"Timed out waiting for {package} process after adb launch")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Capture WeChat raw SQLCipher key with Python Frida")
     parser.add_argument("--out", default=r"C:\wechat-stage", help="output directory")
@@ -64,6 +122,9 @@ def main() -> int:
     parser.add_argument("--package", default="com.tencent.mm", help="Android package name")
     parser.add_argument("--timeout", type=int, default=180, help="capture timeout seconds")
     parser.add_argument("--attach-only", action="store_true", help="attach to already-running WeChat instead of spawning it")
+    parser.add_argument("--adb", default="adb", help="adb executable path/name for spawn fallback launch")
+    parser.add_argument("--device", default="", help="optional adb serial for spawn fallback launch")
+    parser.add_argument("--no-fallback-launch", action="store_true", help="do not fallback to adb launch + attach if Frida spawn fails")
     args = parser.parse_args()
 
     out_dir = pathlib.Path(args.out).expanduser().resolve()
@@ -115,9 +176,19 @@ def main() -> int:
             session = device.attach(pid)
         else:
             print(f"Spawning {args.package} under Frida...")
-            pid = device.spawn([args.package])
-            spawned = True
-            session = device.attach(pid)
+            try:
+                pid = device.spawn([args.package])
+                spawned = True
+                session = device.attach(pid)
+            except Exception as exc:
+                if args.no_fallback_launch:
+                    raise
+                print(f"Frida spawn failed: {exc}")
+                print("Falling back to normal adb launch + Frida attach...")
+                launch_with_adb(args.adb, args.device, args.package)
+                pid = wait_for_process(device, args.package, timeout=25)
+                print(f"Attaching to adb-launched {args.package}, pid={pid}")
+                session = device.attach(pid)
 
         script = session.create_script(agent_source)
         script.on("message", on_message)

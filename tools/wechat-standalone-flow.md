@@ -113,7 +113,7 @@ C:\wechat-stage\raw-keys.json
 C:\wechat-stage\frida-wechat-key.log
 ```
 
-If spawn mode has trouble, open WeChat manually first, enter any chat, then attach to the running process:
+On some phones WeChat cannot be started by Frida spawn and fails with an error such as `java.lang.reflect.InvocationTargetException`. The Python script automatically falls back to normal `adb shell monkey` launch plus Frida attach. If you need to force manual attach mode, open WeChat manually first, enter any chat, then run:
 
 ```powershell
 python tools\wechat_frida_capture_key.py --attach-only
