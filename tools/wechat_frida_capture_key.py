@@ -54,9 +54,18 @@ def append_log(path: pathlib.Path, obj: Any) -> None:
 
 def find_process(device: Any, package: str) -> Optional[int]:
     for proc in device.enumerate_processes():
-        if proc.name == package:
+        if proc.name == package or proc.name.startswith(package + ":"):
             return proc.pid
     return None
+
+
+def find_processes(device: Any, package: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for proc in device.enumerate_processes():
+        name = getattr(proc, "name", "")
+        if name == package or name.startswith(package + ":"):
+            out.append({"pid": proc.pid, "name": name})
+    return out
 
 
 def adb_args(adb: str, device: str, args: Iterable[str]) -> List[str]:
@@ -80,6 +89,28 @@ def run_adb(adb: str, device: str, *args: str, check: bool = True) -> subprocess
     if check and proc.returncode != 0:
         raise RuntimeError(f"adb failed ({proc.returncode}): {' '.join(cmd)}\n{(proc.stdout or '').strip()}")
     return proc
+
+
+def pidof_with_adb(adb: str, device_serial: str, package: str) -> Optional[int]:
+    if adb == "adb" and not shutil.which("adb"):
+        return None
+    proc = run_adb(adb, device_serial, "shell", "pidof", package, check=False)
+    text = (proc.stdout or "").strip()
+    if not text:
+        return None
+    for part in text.split():
+        try:
+            return int(part)
+        except ValueError:
+            continue
+    return None
+
+
+def resolve_process_pid(device: Any, adb: str, device_serial: str, package: str) -> Optional[int]:
+    pid = find_process(device, package)
+    if pid:
+        return pid
+    return pidof_with_adb(adb, device_serial, package)
 
 
 def launch_with_adb(adb: str, device_serial: str, package: str) -> None:
@@ -115,6 +146,16 @@ def wait_for_process(device: Any, package: str, timeout: int = 20) -> int:
     raise RuntimeError(f"Timed out waiting for {package} process after adb launch")
 
 
+def wait_for_process_with_adb(device: Any, adb: str, device_serial: str, package: str, timeout: int = 20) -> int:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pid = resolve_process_pid(device, adb, device_serial, package)
+        if pid:
+            return pid
+        time.sleep(0.5)
+    raise RuntimeError(f"Timed out waiting for {package} process after adb launch")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Capture WeChat raw SQLCipher key with Python Frida")
     parser.add_argument("--out", default=r"C:\wechat-stage", help="output directory")
@@ -122,6 +163,7 @@ def main() -> int:
     parser.add_argument("--package", default="com.tencent.mm", help="Android package name")
     parser.add_argument("--timeout", type=int, default=180, help="capture timeout seconds")
     parser.add_argument("--attach-only", action="store_true", help="attach to already-running WeChat instead of spawning it")
+    parser.add_argument("--pid", type=int, default=0, help="explicit process PID to attach")
     parser.add_argument("--adb", default="adb", help="adb executable path/name for spawn fallback launch")
     parser.add_argument("--device", default="", help="optional adb serial for spawn fallback launch")
     parser.add_argument("--no-fallback-launch", action="store_true", help="do not fallback to adb launch + attach if Frida spawn fails")
@@ -161,6 +203,13 @@ def main() -> int:
     print("Connecting to USB Frida device...")
     device = frida.get_usb_device(timeout=10)
     print(f"Device: {device}")
+    matching = find_processes(device, args.package)
+    if matching:
+        print("Frida-visible matching processes: " + ", ".join(f"{p['name']}({p['pid']})" for p in matching))
+    else:
+        adb_pid = pidof_with_adb(args.adb, args.device, args.package)
+        if adb_pid:
+            print(f"Frida process list did not show {args.package}, but adb pidof found pid={adb_pid}")
 
     pid: Optional[int] = None
     session = None
@@ -169,9 +218,13 @@ def main() -> int:
 
     try:
         if args.attach_only:
-            pid = find_process(device, args.package)
+            pid = args.pid or resolve_process_pid(device, args.adb, args.device, args.package)
             if not pid:
-                raise RuntimeError(f"{args.package} is not running. Open WeChat first, or run without --attach-only.")
+                raise RuntimeError(
+                    f"{args.package} is not running according to Frida/adb. "
+                    "Open WeChat first, or run without --attach-only. "
+                    "If adb pidof shows a PID, pass it with --pid <PID>."
+                )
             print(f"Attaching to running {args.package}, pid={pid}")
             session = device.attach(pid)
         else:
@@ -186,7 +239,7 @@ def main() -> int:
                 print(f"Frida spawn failed: {exc}")
                 print("Falling back to normal adb launch + Frida attach...")
                 launch_with_adb(args.adb, args.device, args.package)
-                pid = wait_for_process(device, args.package, timeout=25)
+                pid = wait_for_process_with_adb(device, args.adb, args.device, args.package, timeout=25)
                 print(f"Attaching to adb-launched {args.package}, pid={pid}")
                 session = device.attach(pid)
 
