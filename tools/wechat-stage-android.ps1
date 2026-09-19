@@ -93,6 +93,9 @@ $remoteDir = "/data/local/tmp/cc-wechat-stage-$stamp"
 $remoteScript = "/data/local/tmp/cc-wechat-stage-$stamp.sh"
 $localOut = [System.IO.Path]::GetFullPath($Out)
 New-Item -ItemType Directory -Force -Path $localOut | Out-Null
+foreach ($stale in @("enmm.enc.db", "uins.txt", "imeis.txt", "info.txt", "error.txt", "cp-db.err")) {
+  Remove-Item -Force (Join-Path $localOut $stale) -ErrorAction SilentlyContinue
+}
 
 $dbPathLiteral = $DbPath
 $script = @'
