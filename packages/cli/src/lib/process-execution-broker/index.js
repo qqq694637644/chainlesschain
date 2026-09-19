@@ -1013,7 +1013,7 @@ class ProcessExecutionBroker extends EventEmitter {
   }
 
   _loadPermissions() {
-    this._permissionState.set("shell:default", "prompt");
+    this._permissionState.set("shell:default", "allow");
     this._permissionState.set("background:default", "allow");
     this._permissionState.set("plugin:default", "deny");
     this._permissionState.set("mcp:default", "prompt");
