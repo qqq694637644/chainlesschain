@@ -160,6 +160,25 @@ def try_set_permissive(adb: str, device: str) -> None:
             print(f"SELinux before frida-inject launch: {after}")
 
 
+def print_process_maps_hint(adb: str, device: str, pid: int) -> None:
+    pattern = "lib.*(wcdb|sqlite|sqlcipher|crypto|ssl).*\\.so|WCDB|EnMicroMsg|MicroMsg"
+    proc = run_adb(
+        adb,
+        device,
+        "shell",
+        "su",
+        "-c",
+        f"cat /proc/{pid}/maps 2>/dev/null | grep -Ei '{pattern}' | head -80",
+        check=False,
+    )
+    text = (proc.stdout or "").strip()
+    print("Process maps diagnostic:")
+    if text:
+        print(text)
+    else:
+        print(f"  no wcdb/sqlite/crypto/MicroMsg mappings visible in /proc/{pid}/maps")
+
+
 def push_stage(adb: str, device: str, inject_path: pathlib.Path, agent_path: pathlib.Path) -> Tuple[str, str]:
     remote_inject = "/data/local/tmp/cc-frida-inject"
     remote_agent = "/data/local/tmp/cc-wechat-aes-hook.js"
@@ -254,6 +273,7 @@ def main() -> int:
 
     pid = args.pid or pidof_wechat(args.adb, args.device, args.package)
     print(f"Using WeChat pid: {pid}")
+    print_process_maps_hint(args.adb, args.device, pid)
     print("Keep WeChat open and browse several chats during capture.")
     print("The script collects every 256-bit aes_v8_set_encrypt_key key it sees.")
 
