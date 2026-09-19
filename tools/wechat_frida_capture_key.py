@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 Capture Android WeChat SQLCipher raw key with Python Frida.
 
 This script uses the Python `frida` package directly. It does not call the
