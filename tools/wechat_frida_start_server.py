@@ -90,6 +90,18 @@ def download_file(url: str, dst: pathlib.Path) -> None:
         shutil.copyfileobj(r, f)
 
 
+def shell_join(parts: Iterable[str]) -> str:
+    return "; ".join(parts)
+
+
+def get_device_file(adb: str, device: str, remote: str, *, max_chars: int = 4000) -> str:
+    proc = run_adb(adb, device, "shell", "su", "-c", f"cat {remote} 2>/dev/null", check=False, capture=True)
+    text = proc.stdout or ""
+    if len(text) > max_chars:
+        return text[-max_chars:]
+    return text
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start matching frida-server on rooted Android")
     parser.add_argument("--adb", default="adb", help="adb executable path/name")
@@ -147,18 +159,45 @@ def main() -> int:
     proc = run_adb(args.adb, args.device, "push", str(server_path), "/data/local/tmp/frida-server", capture=True)
     print_output(proc)
     # Default frida-server port is 27042. Python frida's USB transport expects that default.
+    # Some rooted Android builds keep SELinux in Enforcing mode and block
+    # frida-server from reading /sys/fs/selinux/policy. Try to switch to
+    # permissive mode first, but keep going if the ROM/kernel does not allow it.
+    getenforce_before = run_adb(args.adb, args.device, "shell", "su", "-c", "getenforce 2>/dev/null", check=False, capture=True)
+    if getenforce_before.stdout:
+        print(f"SELinux before start: {getenforce_before.stdout.strip()}")
+    setenforce = run_adb(args.adb, args.device, "shell", "su", "-c", "setenforce 0 2>/dev/null", check=False, capture=True)
+    if setenforce.returncode != 0:
+        print("warning: setenforce 0 failed or is not allowed on this device; trying frida-server anyway")
+    getenforce_after = run_adb(args.adb, args.device, "shell", "su", "-c", "getenforce 2>/dev/null", check=False, capture=True)
+    if getenforce_after.stdout:
+        print(f"SELinux before frida-server launch: {getenforce_after.stdout.strip()}")
+
+    start_cmd = shell_join([
+        "chmod 755 /data/local/tmp/frida-server",
+        "pkill -9 frida-server 2>/dev/null || true",
+        "rm -f /data/local/tmp/frida-server.log",
+        # Start in the background instead of relying on `frida-server -D` to
+        # daemonize successfully. Capture stderr/stdout for diagnostics.
+        "(/data/local/tmp/frida-server >/data/local/tmp/frida-server.log 2>&1 &)",
+    ])
     run_adb(
         args.adb,
         args.device,
         "shell",
         "su",
         "-c",
-        "chmod 755 /data/local/tmp/frida-server; pkill -9 frida-server 2>/dev/null; /data/local/tmp/frida-server -D",
+        start_cmd,
     )
     time.sleep(1)
 
     print("[7/7] Verifying frida-server...")
-    proc = run_adb(args.adb, args.device, "shell", "su", "-c", "pgrep -f frida-server", capture=True)
+    proc = run_adb(args.adb, args.device, "shell", "su", "-c", "pgrep -f frida-server", check=False, capture=True)
+    if proc.returncode != 0:
+        server_log = get_device_file(args.adb, args.device, "/data/local/tmp/frida-server.log")
+        if server_log.strip():
+            print("\nfrida-server log:")
+            print(server_log.rstrip())
+        raise RuntimeError("frida-server did not stay running. See log above.")
     print_output(proc)
 
     try:
@@ -167,6 +206,10 @@ def main() -> int:
         procs = device.enumerate_processes()
         print(f"Frida process enumeration OK, processes={len(procs)}")
     except Exception as exc:
+        server_log = get_device_file(args.adb, args.device, "/data/local/tmp/frida-server.log")
+        if server_log.strip():
+            print("\nfrida-server log:")
+            print(server_log.rstrip())
         raise RuntimeError(f"frida-server started but Python frida could not connect: {exc}") from exc
 
     print("\nOK. frida-server is running and Python frida can connect.")
