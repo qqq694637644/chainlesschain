@@ -63,3 +63,56 @@ android-app/app/src/main/assets/frida/wechat-key-hook.js
 ```
 
 The raw-key route requires rooted Android, a running compatible Frida injector/server, and WeChat opened to a chat so `libWCDB.so` calls `sqlite3_key` / `sqlite3_key_v2`.
+
+## 4. Frida raw-key route on Windows
+
+The repository includes a standalone Frida flow that does not require the
+ChainlessChain CLI or npm workspace install.
+
+### 4.1 Start matching frida-server on the phone
+
+```powershell
+$env:Path = "C:\Users\Administrator\Desktop\platform-tools;$env:Path"
+
+powershell -ExecutionPolicy Bypass -File .\tools\wechat-frida-start-server.ps1
+```
+
+The script installs Python `frida-tools` for the current user, detects the
+Android ABI, downloads the matching `frida-server` version from the official
+Frida GitHub release, pushes it to `/data/local/tmp/frida-server`, and starts
+it as root.
+
+### 4.2 Capture WeChat raw key
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\wechat-frida-capture-key.ps1
+```
+
+While the script runs, unlock the phone and enter any WeChat chat. The capture
+script starts WeChat via Frida, loads `tools/wechat-key-hook-standalone.js`,
+monitors `C:\wechat-stage\frida-wechat-key.log`, and writes:
+
+```text
+C:\wechat-stage\raw-key.txt
+C:\wechat-stage\raw-keys.json
+```
+
+If WeChat is already open and spawn mode has trouble, try attach mode:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\wechat-frida-capture-key.ps1 -AttachOnly
+```
+
+### 4.3 Decrypt with captured raw key
+
+```powershell
+$rawKey = Get-Content C:\wechat-stage\raw-key.txt -Raw
+
+node .\tools\wechat-decrypt-standalone.js `
+  --db C:\wechat-stage\enmm.enc.db `
+  --out C:\wechat-stage\decoded.db `
+  --raw-key $rawKey.Trim() `
+  --force
+```
+
+If `decoded.db` is produced, it is a normal SQLite database.
