@@ -6,12 +6,23 @@ Use only for a rooted Android device and a WeChat account/database you are autho
 
 ## 1. Stage data from Android
 
-From the repository root on Windows PowerShell:
+From the repository root on Windows PowerShell or CMD:
+
+```powershell
+cd C:\Users\Administrator\Desktop\platform-tools\chainlesschain-dev
+set PATH=C:\Users\Administrator\Desktop\platform-tools;%PATH%
+```
+
+In PowerShell, use:
 
 ```powershell
 $env:Path = "C:\Users\Administrator\Desktop\platform-tools;$env:Path"
+```
 
-.\tools\wechat-stage-android.ps1 -Out C:\wechat-stage
+Run the Python staging script:
+
+```powershell
+python tools\wechat_stage_android.py --out C:\wechat-stage
 ```
 
 The staging script follows the same minimum data collection as the original Magisk staging daemon:
@@ -21,7 +32,18 @@ The staging script follows the same minimum data collection as the original Magi
 - `imeis.txt` from `settings get secure android_id` and best-effort `service call iphonesubinfo`
 - `info.txt` with diagnostics
 
-## 2. Decrypt with the standalone Node script
+## 2. Decrypt with legacy UIN/IMEI key candidates
+
+```powershell
+node tools\wechat-decrypt-standalone.js ^
+  --db C:\wechat-stage\enmm.enc.db ^
+  --out C:\wechat-stage\decoded.db ^
+  --uins C:\wechat-stage\uins.txt ^
+  --imeis C:\wechat-stage\imeis.txt ^
+  --force
+```
+
+PowerShell multiline form:
 
 ```powershell
 node .\tools\wechat-decrypt-standalone.js `
@@ -47,71 +69,63 @@ That usually means modern WeChat did not use a key derivable from the available 
 - a saved 7-character SQLCipher passphrase:
 
 ```powershell
-node .\tools\wechat-decrypt-standalone.js --db C:\wechat-stage\enmm.enc.db --out C:\wechat-stage\decoded.db --key <7-char-key> --force
+node tools\wechat-decrypt-standalone.js --db C:\wechat-stage\enmm.enc.db --out C:\wechat-stage\decoded.db --key <7-char-key> --force
 ```
 
 - or a 32-byte raw key hex captured from the live WeChat process:
 
 ```powershell
-node .\tools\wechat-decrypt-standalone.js --db C:\wechat-stage\enmm.enc.db --out C:\wechat-stage\decoded.db --raw-key <64-hex-chars> --force
+node tools\wechat-decrypt-standalone.js --db C:\wechat-stage\enmm.enc.db --out C:\wechat-stage\decoded.db --raw-key <64-hex-chars> --force
 ```
 
-The repository's Frida agent for that raw-key route is:
+The repository's standalone Frida agent for the raw-key route is:
 
 ```text
-android-app/app/src/main/assets/frida/wechat-key-hook.js
+tools/wechat-key-hook-standalone.js
 ```
 
-The raw-key route requires rooted Android, a running compatible Frida injector/server, and WeChat opened to a chat so `libWCDB.so` calls `sqlite3_key` / `sqlite3_key_v2`.
+The raw-key route requires rooted Android, a running compatible Frida server, and WeChat opened to a chat so `libWCDB.so` calls `sqlite3_key` / `sqlite3_key_v2`.
 
-## 4. Frida raw-key route on Windows
+## 4. Frida raw-key route on Windows, Python-only
 
-The repository includes a standalone Frida flow that does not require the
-ChainlessChain CLI or npm workspace install.
+No `.ps1` scripts are needed.
 
 ### 4.1 Start matching frida-server on the phone
 
 ```powershell
 $env:Path = "C:\Users\Administrator\Desktop\platform-tools;$env:Path"
-
-powershell -ExecutionPolicy Bypass -File .\tools\wechat-frida-start-server.ps1
+python tools\wechat_frida_start_server.py
 ```
 
-The script installs Python `frida-tools` for the current user, detects the
-Android ABI, downloads the matching `frida-server` version from the official
-Frida GitHub release, pushes it to `/data/local/tmp/frida-server`, and starts
-it as root.
+The script installs Python package `frida` for the current user if missing, detects the Android ABI, downloads the matching `frida-server` version from the official Frida GitHub release, pushes it to `/data/local/tmp/frida-server`, starts it as root, and verifies that Python Frida can connect.
 
 ### 4.2 Capture WeChat raw key
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\wechat-frida-capture-key.ps1
+python tools\wechat_frida_capture_key.py
 ```
 
-While the script runs, unlock the phone and enter any WeChat chat. The capture
-script starts WeChat via Frida, loads `tools/wechat-key-hook-standalone.js`,
-monitors `C:\wechat-stage\frida-wechat-key.log`, and writes:
+While the script runs, unlock the phone and enter any WeChat chat. The capture script starts WeChat through Python Frida, loads `tools/wechat-key-hook-standalone.js`, and writes:
 
 ```text
 C:\wechat-stage\raw-key.txt
 C:\wechat-stage\raw-keys.json
+C:\wechat-stage\frida-wechat-key.log
 ```
 
-If WeChat is already open and spawn mode has trouble, try attach mode:
+If spawn mode has trouble, open WeChat manually first, enter any chat, then attach to the running process:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\wechat-frida-capture-key.ps1 -AttachOnly
+python tools\wechat_frida_capture_key.py --attach-only
 ```
 
 ### 4.3 Decrypt with captured raw key
 
 ```powershell
-$rawKey = Get-Content C:\wechat-stage\raw-key.txt -Raw
-
-node .\tools\wechat-decrypt-standalone.js `
+node tools\wechat-decrypt-standalone.js `
   --db C:\wechat-stage\enmm.enc.db `
   --out C:\wechat-stage\decoded.db `
-  --raw-key $rawKey.Trim() `
+  --raw-keys C:\wechat-stage\raw-keys.json `
   --force
 ```
 
